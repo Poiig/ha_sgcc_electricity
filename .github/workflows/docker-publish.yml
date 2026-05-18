@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '发布版本号（如 v1.0.0，留空则用 git sha）'
+        description: '自定义版本号（留空则用当前日期时间如 20260518-2200）'
         required: false
         type: string
         default: ''
@@ -29,14 +29,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set version tag
+      - name: Generate version tag
         id: version
         run: |
           if [ -n "${{ inputs.version }}" ]; then
-            echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            TAG="${{ inputs.version }}"
           else
-            echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+            TAG="$(date +%Y%m%d-%H%M)"
           fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "本次发布版本: ${TAG}"
 
       - name: Check Docker Hub secrets
         id: dockerhub
@@ -50,7 +52,7 @@ jobs:
             echo "Docker Hub 已配置，将同时推送"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "Docker Hub 未配置（需 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN），仅推送 GHCR"
+            echo "Docker Hub 未配置，仅推送 GHCR"
           fi
 
       - name: Set up QEMU
@@ -73,47 +75,54 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Prepare image list
-        id: images
-        run: |
-          IMAGES="ghcr.io/${{ github.repository }}"
-          if [ "${{ steps.dockerhub.outputs.enabled }}" = "true" ]; then
-            IMAGES="${IMAGES},${{ steps.dockerhub.outputs.image }}"
-          fi
-          echo "list=${IMAGES}" >> "$GITHUB_OUTPUT"
-          echo "将推送镜像: ${IMAGES}"
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.images.outputs.list }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=${{ steps.version.outputs.tag }}
-            type=sha,prefix=,format=short
-
-      - name: Build and push Docker image
+      - name: Build and push to GHCR
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }}
           build-args: |
             VERSION=${{ steps.version.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build and push to Docker Hub
+        if: steps.dockerhub.outputs.enabled == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.dockerhub.outputs.image }}:latest
+            ${{ steps.dockerhub.outputs.image }}:${{ steps.version.outputs.tag }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Clean up old GHCR images (keep latest 10)
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: ${{ github.event.repository.name }}
+          package-type: container
+          min-versions-to-keep: 10
+          delete-only-pre-release-versions: true
+
       - name: Summary
         run: |
-          echo "### 镜像已发布" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Docker 镜像发布成功" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **GHCR**: \`ghcr.io/${{ github.repository }}:latest\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **GHCR**: \`ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 注册表 | latest | 版本 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|--------|------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| GHCR | \`ghcr.io/${{ github.repository }}:latest\` | \`ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
           if [ "${{ steps.dockerhub.outputs.enabled }}" = "true" ]; then
-            echo "- **Docker Hub**: \`${{ steps.dockerhub.outputs.image }}:latest\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "- **Docker Hub**: \`${{ steps.dockerhub.outputs.image }}:${{ steps.version.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Docker Hub | \`${{ steps.dockerhub.outputs.image }}:latest\` | \`${{ steps.dockerhub.outputs.image }}:${{ steps.version.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
           fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "GHCR 已配置保留最近 10 个版本，旧版本自动清理" >> "$GITHUB_STEP_SUMMARY"

@@ -44,36 +44,21 @@
 - 支持 Docker 部署（`linux/amd64`、`linux/arm64`）
 - 支持本地运行（Windows / macOS / Linux + Python 3.11+）
 
-## 快速部署
+## Docker 部署（推荐）
 
-### Docker Compose（推荐）
-
-```bash
-git clone https://github.com/<your-username>/sgcc_electricity_new.git
-cd sgcc_electricity_new
-cp example.env .env
-# 编辑 .env 填写配置
-vim .env
-docker compose up -d
-```
-
-### 本地运行
-
-详见 [LOCAL_DEV_GUIDE.md](LOCAL_DEV_GUIDE.md)
+### 1. 创建配置文件
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+# 下载 docker-compose.yml 和配置模板
+mkdir sgcc_electricity && cd sgcc_electricity
+curl -O https://raw.githubusercontent.com/Poiig/sgcc_electricity_new/master/docker-compose.yml
+curl -O https://raw.githubusercontent.com/Poiig/sgcc_electricity_new/master/example.env
 cp example.env .env
-# 编辑 .env
-cd scripts
-python main.py
 ```
 
-## 配置说明
+### 2. 编辑 `.env`
 
-复制 `example.env` 为 `.env`，修改以下必填项：
+修改以下必填项（完整配置项说明见 `example.env`）：
 
 ```ini
 # 国网登录信息
@@ -88,7 +73,66 @@ HASS_TOKEN="你的HA长期访问令牌"
 LOGIN_FALLBACK='qrcode'
 ```
 
-完整配置项说明见 `example.env`。
+### 3. 启动
+
+```bash
+docker compose up -d
+```
+
+### 4. 查看日志
+
+```bash
+docker compose logs -f sgcc_electricity
+```
+
+成功运行后日志示例：
+
+```
+[INFO] DataFetcher 初始化完成: 用户=138xxxx, 步骤等待=10s
+[INFO] 正在初始化 WebDriver, 平台: Linux
+[INFO] 使用 Chromium 浏览器 (Docker 模式)
+[INFO] 已打开登录页面
+[INFO] 已输入账号密码, 账号: 138xxxx
+[INFO] 检测到验证码: 类型=point_click, 提示文字=请依次点击...
+[INFO] 点选验证码识别成功, 已通过验证!
+[INFO] 登录成功!
+[INFO] 共获取到 1 个用户: ['1234567890'], 其中忽略列表将被忽略
+[INFO] ===== 开始处理第 1/1 个用户: 1234567890 =====
+[INFO] [1234567890] 电费余额: 102.3 元
+[INFO] [1234567890] 年度用电量: 1691 kWh
+[INFO] [1234567890] 最近用电: 2026-05-17 用电 6.56 kWh
+[INFO] [1234567890] Home Assistant 传感器数据更新完成!
+```
+
+### 5. 更新
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+### 镜像地址
+
+| 来源 | 地址 |
+|------|------|
+| GHCR（推荐） | `ghcr.io/poiig/sgcc_electricity_new:latest` |
+| Docker Hub | `poiig/sgcc_electricity:latest` |
+
+支持架构：`linux/amd64`、`linux/arm64`
+
+## 本地运行
+
+详见 [LOCAL_DEV_GUIDE.md](LOCAL_DEV_GUIDE.md)
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+cp example.env .env
+# 编辑 .env
+cd scripts
+python main.py
+```
 
 ## 登录流程
 
@@ -133,6 +177,58 @@ template:
         state_class: measurement
         unit_of_measurement: "kWh"
         device_class: energy
+
+  - trigger:
+      - platform: event
+        event_type: state_changed
+        event_data:
+          entity_id: sensor.month_electricity_usage_xxxx
+    sensor:
+      - name: month_electricity_usage_xxxx
+        unique_id: month_electricity_usage_xxxx
+        state: "{{ states('sensor.month_electricity_usage_xxxx') }}"
+        state_class: measurement
+        unit_of_measurement: "kWh"
+        device_class: energy
+
+  - trigger:
+      - platform: event
+        event_type: state_changed
+        event_data:
+          entity_id: sensor.month_electricity_charge_xxxx
+    sensor:
+      - name: month_electricity_charge_xxxx
+        unique_id: month_electricity_charge_xxxx
+        state: "{{ states('sensor.month_electricity_charge_xxxx') }}"
+        state_class: measurement
+        unit_of_measurement: "CNY"
+        device_class: monetary
+
+  - trigger:
+      - platform: event
+        event_type: state_changed
+        event_data:
+          entity_id: sensor.yearly_electricity_usage_xxxx
+    sensor:
+      - name: yearly_electricity_usage_xxxx
+        unique_id: yearly_electricity_usage_xxxx
+        state: "{{ states('sensor.yearly_electricity_usage_xxxx') }}"
+        state_class: total_increasing
+        unit_of_measurement: "kWh"
+        device_class: energy
+
+  - trigger:
+      - platform: event
+        event_type: state_changed
+        event_data:
+          entity_id: sensor.yearly_electricity_charge_xxxx
+    sensor:
+      - name: yearly_electricity_charge_xxxx
+        unique_id: yearly_electricity_charge_xxxx
+        state: "{{ states('sensor.yearly_electricity_charge_xxxx') }}"
+        state_class: total_increasing
+        unit_of_measurement: "CNY"
+        device_class: monetary
 ```
 
 （将 `xxxx` 替换为日志中显示的后缀）
@@ -142,7 +238,6 @@ template:
 ### Q: 验证码识别失败
 
 - 检查 `data/pages/` 下的调试截图
-- 适当降低匹配阈值（环境变量 `CAPTCHA_MIN_AVG_SCORE` 等）
 - 国网每天有登录次数限制，频繁测试会导致 RK001 错误
 
 ### Q: RK001 网络连接超时

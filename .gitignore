@@ -13,6 +13,17 @@ screenshots/
 # Cache
 sgcc_cache.json
 
+# Old captcha model (no longer needed)
+scripts/captcha.onnx
+
+# Removed assets
+assets/
+ha_addons_doc/
+icon.png
+logo.png
+repository.yaml
+Dockerfile-for-github-action
+
 translations
 # Byte-compiled / optimized / DLL files
 __pycache__/
