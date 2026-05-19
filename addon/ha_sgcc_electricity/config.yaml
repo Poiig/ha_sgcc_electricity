@@ -1,0 +1,50 @@
+name: "国家电网电费数据获取"
+description: "将国家电网 95598 电费、用电量、分时电量数据通过 REST API 同步到 Home Assistant"
+version: "2.0.0"
+slug: "ha_sgcc_electricity"
+url: "https://github.com/Poiig/ha_sgcc_electricity"
+arch:
+  - aarch64
+  - amd64
+startup: services
+boot: auto
+init: false
+host_network: true
+map:
+  - type: addon_config
+    read_only: false
+    path: /data
+options:
+  phone_number: ""
+  password: ""
+  ignore_user_id: ""
+  db_type: "sqlite"
+  hass_url: "http://homeassistant:8123/"
+  hass_token: ""
+  job_start_time: "07:00"
+  retry_wait_time_offset_unit: 10
+  data_retention_days: 365
+  daily_fetch_days: 7
+  login_fallback: "qrcode"
+  push_type: "none"
+  balance: 100
+  pushplus_token: ""
+  push_url: ""
+  push_qrcode_url: ""
+schema:
+  phone_number: str
+  password: password
+  ignore_user_id: str?
+  db_type: list(none|sqlite|mysql)
+  hass_url: str
+  hass_token: password
+  job_start_time: str
+  retry_wait_time_offset_unit: int(2,30)
+  data_retention_days: int(0,3650)
+  daily_fetch_days: list(7|30)
+  login_fallback: list(qrcode|none)
+  push_type: list(none|pushplus|urlpush)
+  balance: float
+  pushplus_token: str?
+  push_url: str?
+  push_qrcode_url: str?

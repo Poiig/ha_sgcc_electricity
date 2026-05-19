@@ -1,6 +1,6 @@
 # Env
 .env
-config.yaml
+/config.yaml
 
 # Virtual environments
 .venv/

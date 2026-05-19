@@ -28,14 +28,14 @@ class SensorUpdator:
             self.balance_notify = None
         
 
-    def update_one_userid(self, user_id: str, balance: float, last_daily_date: str, last_daily_usage: float, yearly_charge: float, yearly_usage: float, month_charge: float, month_usage: float, notify=True):
+    def update_one_userid(self, user_id: str, balance: float, last_daily_date: str, last_daily_usage: float, yearly_charge: float, yearly_usage: float, month_charge: float, month_usage: float, tou_data: dict = None, enhanced_balance: dict = None, notify=True):
         logging.info(f"[{user_id}] 开始更新 Home Assistant 传感器数据...")
-        self._save_to_cache(user_id, balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage)
+        self._save_to_cache(user_id, balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data, enhanced_balance)
         postfix = f"_{user_id[-4:]}"
         if balance is not None:
             if notify and self.balance_notify is not None:
                 self.balance_notify(user_id, balance)
-            self.update_balance(postfix, balance)
+            self.update_balance(postfix, balance, enhanced_balance)
         if last_daily_usage is not None:
             self.update_last_daily_usage(postfix, last_daily_date, last_daily_usage)
         if yearly_usage is not None:
@@ -47,13 +47,21 @@ class SensorUpdator:
         if month_charge is not None:
             self.update_month_data(postfix, month_charge)
 
+        # 分时电量传感器
+        if tou_data:
+            self._update_tou_sensors(postfix, tou_data)
+
+        # 预付费余额传感器
+        if enhanced_balance and enhanced_balance.get("prepay_balance") is not None:
+            self.update_prepay_balance(postfix, enhanced_balance["prepay_balance"])
+
         logging.info(f"[{user_id}] Home Assistant 传感器数据更新完成!")
 
     def _get_cache_file(self):
         from const import get_data_dir
         return os.path.join(get_data_dir(), 'sgcc_cache.json')
 
-    def _save_to_cache(self, user_id, balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage):
+    def _save_to_cache(self, user_id, balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data=None, enhanced_balance=None):
         cache_file = self._get_cache_file()
         abs_cache_file = os.path.abspath(cache_file)
         data = {}
@@ -64,7 +72,7 @@ class SensorUpdator:
         except Exception as e:
             logging.warning(f"Failed to load cache file: {e}")
 
-        data[user_id] = {
+        cache_entry = {
             "balance": balance,
             "last_daily_date": last_daily_date,
             "last_daily_usage": last_daily_usage,
@@ -74,6 +82,13 @@ class SensorUpdator:
             "month_usage": month_usage,
             "timestamp": datetime.now().isoformat()
         }
+
+        if tou_data:
+            cache_entry["tou_data"] = tou_data
+        if enhanced_balance:
+            cache_entry["enhanced_balance"] = enhanced_balance
+
+        data[user_id] = cache_entry
 
         try:
             with open(cache_file, 'w') as f:
@@ -174,26 +189,35 @@ class SensorUpdator:
         self.send_url(sensorName, request_body)
         logging.info(f"Homeassistant sensor {sensorName} state updated: {sensorState} kWh")
 
-    def update_balance(self, postfix: str, sensorState: float):
+    def update_balance(self, postfix: str, sensorState: float, enhanced_balance: dict = None):
         sensorName = BALANCE_SENSOR_NAME + postfix
-        
-        # Balance updates normally have a volatile last_reset (current time), 
-        # but if the balance itself hasn't changed, we can skip updating.
+
         if not self.should_update(sensorName, sensorState):
              logging.info(f"Skipping update for {sensorName}, state matches.")
              return
 
         last_reset = datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
+        attributes = {
+            "last_reset": last_reset,
+            "unit_of_measurement": "CNY",
+            "icon": "mdi:cash",
+            "device_class": "monetary",
+            "state_class": "total",
+        }
+        if enhanced_balance:
+            if enhanced_balance.get("prepay_balance") is not None:
+                attributes["prepay_balance"] = enhanced_balance["prepay_balance"]
+            if enhanced_balance.get("estimated_amount") is not None:
+                attributes["estimated_amount"] = enhanced_balance["estimated_amount"]
+            if enhanced_balance.get("history_owe") is not None:
+                attributes["history_owe"] = enhanced_balance["history_owe"]
+            if enhanced_balance.get("penalty") is not None:
+                attributes["penalty"] = enhanced_balance["penalty"]
+
         request_body = {
             "state": sensorState,
             "unique_id": sensorName,
-            "attributes": {
-                "last_reset": last_reset,
-                "unit_of_measurement": "CNY",
-                "icon": "mdi:cash",
-                "device_class": "monetary",
-                "state_class": "total",
-            },
+            "attributes": attributes,
         }
 
         self.send_url(sensorName, request_body)
@@ -258,6 +282,83 @@ class SensorUpdator:
         }
         self.send_url(sensorName, request_body)
         logging.info(f"Homeassistant sensor {sensorName} state updated: {sensorState} {'kWh' if usage else 'CNY'}")
+
+    def _update_tou_sensors(self, postfix: str, tou_data: dict):
+        """更新月度分时电量传感器（谷/平/峰/尖）"""
+        current_date = datetime.now()
+        first_day = current_date.replace(day=1)
+        last_day_prev = first_day - timedelta(days=1)
+        last_reset = last_day_prev.strftime("%Y-%m")
+
+        tou_fields = [
+            ("valley_usage", MONTH_VALLEY_SENSOR_NAME, "谷"),
+            ("flat_usage", MONTH_FLAT_SENSOR_NAME, "平"),
+            ("peak_usage", MONTH_PEAK_SENSOR_NAME, "峰"),
+            ("tip_usage", MONTH_TIP_SENSOR_NAME, "尖"),
+        ]
+
+        # 尝试从 daily 数据汇总当月分时电量
+        daily_rows = tou_data.get("daily", [])
+        if not daily_rows:
+            return
+
+        current_month_prefix = current_date.strftime("%Y-%m")
+        month_valley = sum(r.get("valley_usage", 0) or 0 for r in daily_rows if str(r.get("date", "")[:7]) == current_month_prefix)
+        month_flat = sum(r.get("flat_usage", 0) or 0 for r in daily_rows if str(r.get("date", "")[:7]) == current_month_prefix)
+        month_peak = sum(r.get("peak_usage", 0) or 0 for r in daily_rows if str(r.get("date", "")[:7]) == current_month_prefix)
+        month_tip = sum(r.get("tip_usage", 0) or 0 for r in daily_rows if str(r.get("date", "")[:7]) == current_month_prefix)
+
+        tou_values = {
+            "valley_usage": month_valley,
+            "flat_usage": month_flat,
+            "peak_usage": month_peak,
+            "tip_usage": month_tip,
+        }
+
+        for field_key, sensor_base, label in tou_fields:
+            value = tou_values.get(field_key, 0)
+            if value <= 0:
+                continue
+            sensorName = sensor_base + postfix
+            if not self.should_update(sensorName, value, {"last_reset": last_reset}):
+                logging.info(f"Skipping update for {sensorName}, state matches.")
+                continue
+            request_body = {
+                "state": value,
+                "unique_id": sensorName,
+                "attributes": {
+                    "last_reset": last_reset,
+                    "unit_of_measurement": "kWh",
+                    "icon": "mdi:lightning-bolt",
+                    "device_class": "energy",
+                    "state_class": "measurement",
+                    "friendly_name": f"月度{label}时电量",
+                },
+            }
+            self.send_url(sensorName, request_body)
+            logging.info(f"Homeassistant sensor {sensorName} state updated: {value} kWh ({label})")
+
+    def update_prepay_balance(self, postfix: str, sensorState: float):
+        """更新预付费余额传感器"""
+        sensorName = PREPAY_BALANCE_SENSOR_NAME + postfix
+        if not self.should_update(sensorName, sensorState):
+            logging.info(f"Skipping update for {sensorName}, state matches.")
+            return
+        last_reset = datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
+        request_body = {
+            "state": sensorState,
+            "unique_id": sensorName,
+            "attributes": {
+                "last_reset": last_reset,
+                "unit_of_measurement": "CNY",
+                "icon": "mdi:cash-check",
+                "device_class": "monetary",
+                "state_class": "total",
+                "friendly_name": "预付费余额",
+            },
+        }
+        self.send_url(sensorName, request_body)
+        logging.info(f"Homeassistant sensor {sensorName} state updated: {sensorState} CNY")
 
     def send_url(self, sensorName, request_body):
         headers = {

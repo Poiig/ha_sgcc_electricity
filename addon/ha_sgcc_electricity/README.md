@@ -1,6 +1,6 @@
 # 国家电网电费数据获取 - Home Assistant Add-on
 
-将国家电网 95598 的电费、用电量数据通过 REST API 同步到 Home Assistant。
+将国家电网 95598 的电费、用电量、分时电量数据通过 REST API 同步到 Home Assistant。
 
 ## 使用前准备
 
@@ -29,8 +29,9 @@ https://github.com/Poiig/ha_sgcc_electricity
 | hass_url | Home Assistant 地址 | `http://homeassistant:8123/` |
 | hass_token | HA 长期访问令牌 | 必填 |
 | job_start_time | 每天同步开始时间 | `07:00` |
-| data_retention_days | 每次同步天数 | 7 |
-| db_type | 数据库类型 | none |
+| db_type | 数据库类型 | sqlite |
+| data_retention_days | 数据保留天数 | 365 |
+| daily_fetch_days | 每日获取天数 | 7 |
 | login_fallback | 登录失败备选 | qrcode |
 
 完整配置项在 add-on 配置页面中都有说明。
