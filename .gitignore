@@ -6,7 +6,9 @@
 .venv/
 venv/
 
-docs
+docs/*
+!docs/DATABASE.md
+!docs/HA_CONFIG.md
 
 # Debug / captcha / screenshot output
 pages/
