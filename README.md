@@ -16,11 +16,14 @@
 ## 功能
 
 - 自动登录国家电网（支持点选验证码自动识别）
+- 支持二维码扫码登录（测试时更方便）
 - 通过 Home Assistant REST API 推送传感器数据
 - 支持每日分时电量（谷/平/峰/尖）采集和记录
 - 支持月度分时电量（从电费账单明细获取）
 - 支持电费余额增强信息（预付费余额、预估电费、历史欠费等）
 - 统一数据库表设计（SQLite / MySQL），支持数据保留天数配置
+- 用户名自动从网站获取，无需手动配置映射
+- 忽略用户自动清理数据库旧数据
 - 密码登录失败自动切换二维码登录兜底
 - 电费余额不足通知（PushPlus / URL Push）
 
@@ -88,15 +91,13 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | user_id | TEXT | 用户户号 |
-| as_of | TEXT | 记录时间 |
+| user_name | TEXT | 用户名（自动从网站获取） |
+| as_of | TEXT | 记录日期（YYYY-MM-DD，按天去重） |
 | balance | REAL | 电费余额（CNY） |
-| prepay_balance | REAL | 预付费余额（CNY） |
-| estimated_amount | REAL | 预估电费（CNY） |
-| history_owe | REAL | 历史欠费（CNY） |
-| penalty | REAL | 违约金（CNY） |
-| total_usage | REAL | 总用电量（kWh） |
+| amount_due | REAL | 应交金额（CNY） |
 
 通过 `DATA_RETENTION_DAYS` 环境变量控制数据保留天数（默认 365 天），自动清理过期数据。
+忽略列表中的用户数据会在每次运行时自动清理。
 
 ---
 
@@ -371,6 +372,7 @@ Docker Compose 方式通过 `.env` 文件配置，完整配置项见 `example.en
 | `DATA_RETENTION_DAYS` | 365 | 数据库记录保留天数 |
 | `DAILY_FETCH_DAYS` | 7 | 每次获取日用电量天数（7 或 30） |
 | `DB_TYPE` | none | 数据库类型（none / sqlite / mysql） |
+| `LOGIN_METHOD` | password | 登录方式（password / qrcode） |
 | `LOGIN_FALLBACK` | qrcode | 登录失败备选（qrcode / none） |
 | `RETRY_WAIT_TIME_OFFSET_UNIT` | 10 | 页面操作等待秒数（2-30） |
 

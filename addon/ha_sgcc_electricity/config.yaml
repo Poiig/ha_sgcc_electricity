@@ -10,10 +10,6 @@ startup: services
 boot: auto
 init: false
 host_network: true
-map:
-  - type: addon_config
-    read_only: false
-    path: /data
 options:
   phone_number: ""
   password: ""
