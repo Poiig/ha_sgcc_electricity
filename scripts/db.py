@@ -20,10 +20,33 @@ Field naming conventions:
 import logging
 import os
 import sqlite3
+from calendar import monthrange
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
 import mysql.connector
+
+
+def _month_date_bounds(month: str) -> tuple[str, str]:
+    """自然月 YYYY-MM 的起止日期（含首尾）。"""
+    month_key = str(month).strip()[:7]
+    year, mon = map(int, month_key.split("-"))
+    last_day = monthrange(year, mon)[1]
+    return f"{month_key}-01", f"{month_key}-{last_day:02d}"
+
+
+def _row_to_month_tou_summary(month_key: str, row) -> Optional[dict]:
+    if row is None or row[5] == 0:
+        return None
+    return {
+        "month": month_key,
+        "total_usage": round(float(row[0]), 2),
+        "valley_usage": round(float(row[1]), 2),
+        "flat_usage": round(float(row[2]), 2),
+        "peak_usage": round(float(row[3]), 2),
+        "tip_usage": round(float(row[4]), 2),
+        "day_count": int(row[5]),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +79,10 @@ class DB:
         raise NotImplementedError
 
     def insert_step_data(self, data: dict) -> bool:
+        raise NotImplementedError
+
+    def query_month_tou_from_daily(self, user_id: str, month: str) -> Optional[dict]:
+        """按自然月汇总 daily_usage 表中的谷/平/峰/尖电量。"""
         raise NotImplementedError
 
     def close_connect(self) -> None:
@@ -294,27 +321,36 @@ class SqliteDB(DB):
         finally:
             cursor.close()
 
-    def sync_monthly_from_daily(self, month: str) -> bool:
+    def query_month_tou_from_daily(self, user_id: str, month: str) -> Optional[dict]:
+        uid = str(user_id).strip()
+        month_key = str(month).strip()[:7]
+        start_date, end_date = _month_date_bounds(month_key)
         cursor = self.connect.cursor()
         try:
             cursor.execute(
                 f"""SELECT COALESCE(SUM(total_usage),0), COALESCE(SUM(valley_usage),0),
                            COALESCE(SUM(flat_usage),0), COALESCE(SUM(peak_usage),0),
                            COALESCE(SUM(tip_usage),0), COUNT(*)
-                    FROM {self.DAILY_TABLE} WHERE user_id=? AND substr(date,1,7)=?""",
-                (self.user_id, str(month).strip()),
+                    FROM {self.DAILY_TABLE}
+                    WHERE user_id=? AND date >= ? AND date <= ?""",
+                (uid, start_date, end_date),
             )
-            row = cursor.fetchone()
-            if row is None or row[5] == 0:
-                return False
-            return self.insert_monthly_data({
-                "month": month,
-                "total_usage": float(row[0]),
-                "valley_usage": float(row[1]), "flat_usage": float(row[2]),
-                "peak_usage": float(row[3]), "tip_usage": float(row[4]),
-            })
+            return _row_to_month_tou_summary(month_key, cursor.fetchone())
         finally:
             cursor.close()
+
+    def sync_monthly_from_daily(self, month: str) -> bool:
+        summary = self.query_month_tou_from_daily(self.user_id, month)
+        if not summary:
+            return False
+        return self.insert_monthly_data({
+            "month": month,
+            "total_usage": summary["total_usage"],
+            "valley_usage": summary["valley_usage"],
+            "flat_usage": summary["flat_usage"],
+            "peak_usage": summary["peak_usage"],
+            "tip_usage": summary["tip_usage"],
+        })
 
     def cleanup_old_data(self) -> None:
         retention_days = int(os.getenv("DATA_RETENTION_DAYS", 365))
@@ -577,6 +613,37 @@ class MysqlDB(DB):
              _sf(data.get("balance")), _sf(data.get("amount_due"))),
         )
 
+    def query_month_tou_from_daily(self, user_id: str, month: str) -> Optional[dict]:
+        uid = str(user_id).strip()
+        month_key = str(month).strip()[:7]
+        start_date, end_date = _month_date_bounds(month_key)
+        cursor = self.connect.cursor()
+        try:
+            cursor.execute(
+                f"""SELECT COALESCE(SUM(total_usage),0), COALESCE(SUM(valley_usage),0),
+                           COALESCE(SUM(flat_usage),0), COALESCE(SUM(peak_usage),0),
+                           COALESCE(SUM(tip_usage),0), COUNT(*)
+                    FROM `{self.DAILY_TABLE}`
+                    WHERE user_id=%s AND `date` >= %s AND `date` <= %s""",
+                (uid, start_date, end_date),
+            )
+            return _row_to_month_tou_summary(month_key, cursor.fetchone())
+        finally:
+            cursor.close()
+
+    def sync_monthly_from_daily(self, month: str) -> bool:
+        summary = self.query_month_tou_from_daily(self.user_id, month)
+        if not summary:
+            return False
+        return self.insert_monthly_data({
+            "month": month,
+            "total_usage": summary["total_usage"],
+            "valley_usage": summary["valley_usage"],
+            "flat_usage": summary["flat_usage"],
+            "peak_usage": summary["peak_usage"],
+            "tip_usage": summary["tip_usage"],
+        })
+
     def sync_yearly_from_monthly(self, year: str) -> bool:
         cursor = self.connect.cursor()
         try:
@@ -659,6 +726,16 @@ class MysqlDB(DB):
             self.connect.close()
             self.connect = None
             logging.info("MySQL 连接已关闭")
+
+
+def create_db() -> Optional[DB]:
+    """按 DB_TYPE 创建数据库实例；未配置时返回 None。"""
+    db_type = os.getenv("DB_TYPE", "sqlite").lower()
+    if db_type == "mysql":
+        return MysqlDB()
+    if db_type == "sqlite":
+        return SqliteDB()
+    return None
 
 
 def _sf(value: Any, default: Optional[float] = None) -> Optional[float]:

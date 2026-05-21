@@ -510,12 +510,13 @@ class DataFetcher:
 
     def _fallback_login(self, driver) -> bool:
         """使用 fallback 登录"""
-        fallback = os.getenv("LOGIN_FALLBACK")
-        if fallback == 'qrcode':
-            return self._qr_login(driver)
+        fallback = os.getenv("LOGIN_FALLBACK", "").strip().lower()
+        if fallback == "qrcode":
+            logging.info("密码登录失败，切换为扫码登录 (LOGIN_FALLBACK=qrcode)")
+            return self._qr_login(driver, reason="密码登录失败，已切换扫码登录")
         return False
 
-    def _qr_login(self, driver) -> bool:
+    def _qr_login(self, driver, reason: str = "扫码登录") -> bool:
         logging.info("切换到二维码登录模式")
         # 尝试切换到二维码标签（如果已经在二维码页面则跳过）
         try:
@@ -547,16 +548,13 @@ class DataFetcher:
             logging.info(f"二维码已保存到 {qr_path}, 请扫描登录")
 
         try:
-            from notify import get_qrcode_notifier
-            notifier = get_qrcode_notifier()
-            if notifier:
-                ok = notifier(img_screenshot)
-                if ok:
-                    logging.info("登录二维码已推送到通知渠道")
-                else:
-                    logging.warning("登录二维码推送失败，请检查 WEWORK_WEBHOOK_URL 或 PUSH_QRCODE_URL 配置")
+            from notify import push_login_qrcode
+            if push_login_qrcode(img_screenshot, reason=reason):
+                logging.info("登录二维码已推送到通知渠道")
             else:
-                logging.info("未配置二维码推送渠道 (PUSH_TYPE=wework 或 PUSH_QRCODE_URL)")
+                logging.warning(
+                    "登录二维码推送失败或未配置渠道，请检查 WEWORK_WEBHOOK_URL 或 PUSH_QRCODE_URL"
+                )
         except Exception as e:
             logging.warning(f"二维码推送失败 (不影响扫码登录): {e}")
         logging.info(f"等待扫码登录, 最长等待 {self.QR_CODE_LOGIN_WAIT_COUNT * self.QR_CODE_LOGIN_WAIT_TIME_INTERVAL_UNIT} 秒...")
@@ -597,7 +595,7 @@ class DataFetcher:
                 WebDriverWait(driver, self.DRIVER_IMPLICITY_WAIT_TIME * 3).until(
                     EC.visibility_of_element_located((By.CLASS_NAME, "user")))
                 time.sleep(self._step_wait)
-                if self._qr_login(driver):
+                if self._qr_login(driver, reason="直接扫码登录"):
                     logging.info("扫码登录成功!")
                 else:
                     raise Exception("扫码登录失败")
@@ -653,7 +651,7 @@ class DataFetcher:
                 logging.info(f"当前用户: {current_userid}, 开始获取用电数据...")
                 driver.get(BALANCE_URL)
                 time.sleep(self._step_wait)
-                balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data, enhanced_balance, step_data = self._get_all_data(driver, user_id, userid_index)
+                balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data, enhanced_balance, step_data, last_month_period = self._get_all_data(driver, user_id, userid_index)
                 logging.info(f"用户 [{user_id}] 数据获取完成: 余额={balance}CNY, 最近日用电={last_daily_usage}kWh({last_daily_date}), "
                              f"年度用电={yearly_usage}kWh, 年度电费={yearly_charge}CNY, 月用电={month_usage}kWh, 月电费={month_charge}CNY")
                 updator.update_one_userid(
@@ -673,6 +671,8 @@ class DataFetcher:
                     "yearly_usage": yearly_usage,
                     "month_charge": month_charge,
                     "month_usage": month_usage,
+                    "last_month_period": last_month_period,
+                    "tou_data": tou_data,
                     "enhanced_balance": enhanced_balance,
                 })
                 time.sleep(self._step_wait)
@@ -1069,7 +1069,7 @@ class DataFetcher:
             logging.warning(f"[{user_id}] 月度用电数据获取失败")
 
         logging.info(f"[{user_id}] 正在获取最近一日用电（Home Assistant 传感器）...")
-        last_daily_date, last_daily_usage = self._get_yesterday_usage(driver)
+        last_daily_date, last_daily_usage = self._get_yesterday_usage(driver, user_id)
         if last_daily_usage is None:
             # DOM 失败时使用 Vue state 数据
             last_daily_date = vue_daily_date
@@ -1120,6 +1120,7 @@ class DataFetcher:
         else:
             logging.info(f"[{user_id}] 未配置数据库, 跳过数据存储")
 
+        last_month_period = month[-1] if month else None
         if month_charge:
             month_charge = month_charge[-1]
         else:
@@ -1129,7 +1130,7 @@ class DataFetcher:
         else:
             month_usage = None
 
-        return balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data, enhanced_balance, step_data
+        return balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data, enhanced_balance, step_data, last_month_period
 
     def _db_insert(self, user_id: str, label: str, func, *args, **kwargs) -> bool:
         """执行数据库写入并记录结果，避免静默失败"""
@@ -1463,7 +1464,7 @@ class DataFetcher:
 
         return yearly_usage, yearly_charge
 
-    def _get_yesterday_usage(self, driver):
+    def _get_yesterday_usage(self, driver, user_id=""):
         """获取最近一次用电量"""
         try:
             # 点击日用电量 tab
@@ -1483,7 +1484,8 @@ class DataFetcher:
             last_daily_date = date_element.text
             return last_daily_date, float(usage_element.text)
         except Exception as e:
-            logging.warning(f"[{user_id}] DOM 获取最近一日用电失败 (将尝试 Vue state 或后续批量拉取补充): {e}")
+            tag = f"[{user_id}] " if user_id else ""
+            logging.warning(f"{tag}DOM 获取最近一日用电失败 (将尝试 Vue state 或后续批量拉取补充): {e}")
             return None, None
 
     def _get_month_usage(self, driver):
@@ -1867,12 +1869,14 @@ class DataFetcher:
                     logging.info(f"[{user_id}] 余额日志已写入: {balance} 元")
 
             # 写入每日用电量（含峰谷分时，单一来源避免重复）
+            daily_written = False
             if tou_data and tou_data.get("daily"):
                 tou_count = 0
                 for row in tou_data["daily"]:
                     if self._db_insert(user_id, f"日用电 {row.get('date')}", self.db.insert_daily_data, {**row, "user_name": user_name}):
                         tou_count += 1
                 logging.info(f"[{user_id}] 每日用电量已写入 {tou_count} 条 (含峰谷分时)")
+                daily_written = tou_count > 0
             elif date_list:
                 ok_count = 0
                 for i in range(len(date_list)):
@@ -1883,6 +1887,24 @@ class DataFetcher:
                     }):
                         ok_count += 1
                 logging.info(f"[{user_id}] 每日用电量已写入 {ok_count} 条")
+                daily_written = ok_count > 0
+
+            # 日数据入库后，汇总当前自然月分时并写入 monthly_usage，供 HA 传感器使用
+            if daily_written:
+                current_month = datetime.now().strftime("%Y-%m")
+                if self.db.sync_monthly_from_daily(current_month):
+                    logging.info(f"[{user_id}] 当月 {current_month} 分时已汇总写入 monthly_usage")
+                summary = self.db.query_month_tou_from_daily(user_id, current_month)
+                if summary:
+                    if tou_data is not None:
+                        tou_data["month_tou_summary"] = summary
+                    logging.info(
+                        f"[{user_id}] 当月 {current_month} 分时汇总 ({summary['day_count']} 天): "
+                        f"谷={summary['valley_usage']}, 平={summary['flat_usage']}, "
+                        f"峰={summary['peak_usage']}, 尖={summary['tip_usage']} kWh"
+                    )
+                else:
+                    logging.warning(f"[{user_id}] 当月 {current_month} 日数据已写入，但 SQL 汇总为空")
 
             # 写入月度用电量：优先 Vue state 分时数据，DOM 作补充
             if tou_data and tou_data.get("months"):

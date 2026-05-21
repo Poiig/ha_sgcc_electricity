@@ -37,10 +37,10 @@
 | `sensor.yearly_electricity_charge_xxxx` | 今年总电费（元） |
 | `sensor.month_electricity_usage_xxxx` | 最近一个月用电量（kWh） |
 | `sensor.month_electricity_charge_xxxx` | 上月总电费（元） |
-| `sensor.month_valley_usage_xxxx` | 当月谷时用电量（kWh） |
-| `sensor.month_flat_usage_xxxx` | 当月平时用电量（kWh） |
-| `sensor.month_peak_usage_xxxx` | 当月峰时用电量（kWh） |
-| `sensor.month_tip_usage_xxxx` | 当月尖时用电量（kWh） |
+| `sensor.month_valley_usage_xxxx` | 当月谷时用电量（kWh，**需启用数据库**，见下方说明） |
+| `sensor.month_flat_usage_xxxx` | 当月平时用电量（kWh，**需启用数据库**） |
+| `sensor.month_peak_usage_xxxx` | 当月峰时用电量（kWh，**需启用数据库**） |
+| `sensor.month_tip_usage_xxxx` | 当月尖时用电量（kWh，**需启用数据库**） |
 | `sensor.prepay_balance_xxxx` | 预付费余额/应交金额（元） |
 | `sensor.step_used_step1_xxxx` | 阶梯一阶已用电量（kWh，住宅用户） |
 | `sensor.step_remain_step1_xxxx` | 阶梯一阶剩余电量（kWh，住宅用户） |
@@ -193,7 +193,7 @@ Docker Compose 方式通过 `.env` 文件配置，完整配置项见 `example.en
 | `RUN_ON_STARTUP` | `false` | Docker 启动后立即登录抓取 |
 | `CAPTCHA_SOLVER` | `local` | 验证码识别：`local` 本地 OCR / `llm` 豆包大模型（[接入步骤](#豆包大模型接入-captcha_solverllm)） |
 | `ARK_API_KEY` | — | 火山引擎 API Key（`CAPTCHA_SOLVER=llm` 时必填） |
-| `DB_TYPE` | sqlite | 数据库类型（none / sqlite / mysql） |
+| `DB_TYPE` | sqlite | 数据库类型（**默认 sqlite**；none 不存储且跳过当月分时传感器） |
 | `DAILY_FETCH_DAYS` | 30 | 每次获取日用电量天数（7 或 30） |
 | `DATA_RETENTION_DAYS` | 365 | 数据库记录保留天数 |
 | `IGNORE_USER_ID` | 空 | 忽略的户号（逗号分隔） |
@@ -204,7 +204,27 @@ Docker Compose 方式通过 `.env` 文件配置，完整配置项见 `example.en
 
 ## 数据库
 
+**默认启用 SQLite**（`DB_TYPE=sqlite`），无需额外安装数据库服务，数据文件保存在 `data/` 目录（Docker 下为 `/data`）。
+
+| `DB_TYPE` | 说明 |
+|-----------|------|
+| `sqlite` | **默认**。本地 SQLite 文件，适合单机 / Docker 部署 |
+| `mysql` | 连接外部 MySQL，适合多实例共享或已有 MySQL 环境 |
+| `none` | 不写入数据库；**当月谷/平/峰/尖四个分时传感器不会更新**（无日用电数据可汇总） |
+
 启用数据库后，程序自动创建 6 张表存储用电数据（含阶梯用电），详见 [docs/DATABASE.md](docs/DATABASE.md)。
+
+### 当月分时传感器与数据库的关系
+
+`sensor.month_valley_usage_xxxx` 等四个分时传感器，统计的是**当前自然月**（例如 5 月即 `2026-05`）已入库的日用电数据，通过 SQL 从 `daily_usage` 表汇总谷/平/峰/尖电量。
+
+因此：
+
+- 必须配置 `DB_TYPE=sqlite` 或 `DB_TYPE=mysql`，且每次抓取会写入日用电记录
+- `DB_TYPE=none` 时，上述四个传感器**跳过更新**
+- 数据库里某月有多少天的日记录，当月分时就汇总多少天；历史越完整，当月累计越准确
+
+与 `sensor.month_electricity_usage_xxxx`（上个**账单月**总用电量）的统计周期不同，请勿直接对比数值。
 
 ---
 
@@ -220,7 +240,7 @@ Docker Compose 方式通过 `.env` 文件配置，完整配置项见 `example.en
 > 仅住宅用户（户名含「住宅」）有阶梯数据，充电桩等非住宅户号会自动跳过。
 
 **Q: 分时电量数据为空**
-> 分时电量通过 Vue state 或日用电汇总提取，部分省份可能不支持。
+> 当月谷/平/峰/尖传感器依赖数据库：请确认 `DB_TYPE` 为 `sqlite`（默认）或 `mysql`，**不要设为 `none`**。程序会从 `daily_usage` 表汇总当前自然月的日用电分时；若库中尚无当月记录，传感器不会更新。部分省份日数据可能不含分时字段。
 
 **Q: HA Add-on 启动报 Duplicate mount point**
 > 升级到 v2.0.0+ 已修复此问题。如仍出现，卸载重装 Add-on。

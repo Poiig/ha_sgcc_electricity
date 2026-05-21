@@ -2,6 +2,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
+from typing import Optional
 
 import requests
 from const import *
@@ -67,8 +68,7 @@ class SensorUpdator:
         if month_charge is not None:
             self.update_month_data(postfix, month_charge)
 
-        if tou_data:
-            self._update_tou_sensors(postfix, tou_data)
+        self._update_tou_sensors(user_id, postfix, tou_data)
 
         if step_data:
             self._update_step_sensors(postfix, step_data)
@@ -146,6 +146,31 @@ class SensorUpdator:
             logging.error(f"从缓存恢复数据失败: {e}")
             return False
 
+    @staticmethod
+    def _current_month_key() -> str:
+        """当前自然月 YYYY-MM（当月分时传感器统计周期）。"""
+        return datetime.now().strftime("%Y-%m")
+
+    def _query_month_tou_from_db(self, user_id: str, month: str) -> Optional[dict]:
+        from db import create_db
+        db = create_db()
+        if db is None:
+            logging.info(f"[{user_id}] 未配置数据库 (DB_TYPE=none)，跳过当月分时传感器更新")
+            return None
+        if not db.connect_user_db(user_id):
+            logging.warning(f"[{user_id}] 数据库连接失败，无法查询当月分时电量")
+            return None
+        try:
+            return db.query_month_tou_from_daily(user_id, month)
+        finally:
+            db.close_connect()
+
+    def _should_push(self, sensor_name, new_state, check_attributes=None) -> bool:
+        skip = os.getenv("HA_SKIP_UNCHANGED", "false").lower() in ("true", "1", "yes")
+        if not skip:
+            return True
+        return self.should_update(sensor_name, new_state, check_attributes)
+
     def get_sensor_state(self, sensor_name):
         headers = {
             "Content-Type": "application/json",
@@ -190,7 +215,7 @@ class SensorUpdator:
         base = DAILY_USAGE_SENSOR_NAME
         sensorName = self._sensor_name(base, postfix)
 
-        if not self.should_update(sensorName, sensorState, {"last_reset": last_daily_date}):
+        if not self._should_push(sensorName, sensorState, {"last_reset": last_daily_date}):
             self._log_skip(base, postfix)
             return
 
@@ -214,7 +239,7 @@ class SensorUpdator:
         base = BALANCE_SENSOR_NAME
         sensorName = self._sensor_name(base, postfix)
 
-        if not self.should_update(sensorName, sensorState):
+        if not self._should_push(sensorName, sensorState):
             self._log_skip(base, postfix)
             return
 
@@ -248,7 +273,7 @@ class SensorUpdator:
         last_day_of_previous_month = first_day_of_current_month - timedelta(days=1)
         last_reset = last_day_of_previous_month.strftime("%Y-%m")
 
-        if not self.should_update(sensorName, sensorState, {"last_reset": last_reset}):
+        if not self._should_push(sensorName, sensorState, {"last_reset": last_reset}):
             self._log_skip(base, postfix)
             return
 
@@ -278,7 +303,7 @@ class SensorUpdator:
         else:
             last_reset = datetime.now().strftime("%Y")
 
-        if not self.should_update(sensorName, sensorState, {"last_reset": last_reset}):
+        if not self._should_push(sensorName, sensorState, {"last_reset": last_reset}):
             self._log_skip(base, postfix)
             return
 
@@ -298,43 +323,23 @@ class SensorUpdator:
         self.send_url(sensorName, request_body)
         self._log_updated(base, postfix, sensorState, unit)
 
-    def _resolve_month_tou_values(self, tou_data: dict) -> tuple[dict, str]:
-        """解析当月谷/平/峰/尖电量，优先账单分时，其次日用电汇总。"""
-        current_month = datetime.now().strftime("%Y-%m")
-        fields = ("valley_usage", "flat_usage", "peak_usage", "tip_usage")
-        values = {k: 0.0 for k in fields}
+    def _update_tou_sensors(self, user_id: str, postfix: str, tou_data: dict = None):
+        """从数据库汇总当前自然月日用电，更新谷/平/峰/尖传感器。"""
+        target_month = self._current_month_key()
+        last_reset = target_month
 
-        bill = tou_data.get("bill_month_tou") or {}
-        bill_month = str(bill.get("month") or "")[:7]
-        if bill_month == current_month:
-            for key in fields:
-                val = bill.get(key)
-                if val is not None:
-                    values[key] = float(val)
-            return values, "账单分时"
-
-        daily_rows = tou_data.get("daily") or []
-        month_rows = [r for r in daily_rows if str(r.get("date", ""))[:7] == current_month]
-        if month_rows:
-            for key in fields:
-                values[key] = sum(float(r.get(key, 0) or 0) for r in month_rows)
-            return values, "日用电汇总"
-
-        return values, ""
-
-    def _update_tou_sensors(self, postfix: str, tou_data: dict):
-        """更新月度分时电量传感器（谷/平/峰/尖）"""
-        current_date = datetime.now()
-        first_day = current_date.replace(day=1)
-        last_day_prev = first_day - timedelta(days=1)
-        last_reset = last_day_prev.strftime("%Y-%m")
-
-        tou_values, source = self._resolve_month_tou_values(tou_data)
-        if not source:
-            logging.info(f"未获取到 {current_date.strftime('%Y-%m')} 月分时电量，跳过谷/平/峰/尖更新")
+        summary = (tou_data or {}).get("month_tou_summary")
+        if not summary:
+            summary = self._query_month_tou_from_db(user_id, target_month)
+        if not summary:
+            logging.info(f"[{user_id}] 数据库中无 {target_month} 月日用电分时数据，跳过谷/平/峰/尖更新")
             return
 
-        logging.info(f"当月分时电量来源: {source}")
+        logging.info(
+            f"[{user_id}] {target_month} 月分时（数据库日用电汇总 {summary['day_count']} 天）: "
+            f"谷={summary['valley_usage']}, 平={summary['flat_usage']}, "
+            f"峰={summary['peak_usage']}, 尖={summary['tip_usage']} kWh"
+        )
 
         tou_fields = [
             ("valley_usage", MONTH_VALLEY_SENSOR_NAME),
@@ -344,11 +349,11 @@ class SensorUpdator:
         ]
 
         for field_key, sensor_base in tou_fields:
-            value = tou_values.get(field_key, 0) or 0
+            value = summary.get(field_key, 0) or 0
             sensorName = self._sensor_name(sensor_base, postfix)
             label = self._sensor_label(sensor_base)
 
-            if not self.should_update(sensorName, value, {"last_reset": last_reset}):
+            if not self._should_push(sensorName, value, {"last_reset": last_reset}):
                 logging.info(f"跳过更新 {label} 【{sensorName}】，状态一致")
                 continue
 
@@ -387,7 +392,7 @@ class SensorUpdator:
             value = float(step_data.get(field_key) or 0)
             sensorName = self._sensor_name(sensor_base, postfix)
             label = self._sensor_label(sensor_base)
-            if not self.should_update(sensorName, value, check_attrs):
+            if not self._should_push(sensorName, value, check_attrs):
                 logging.info(f"跳过更新 {label} 【{sensorName}】，状态一致")
                 continue
             request_body = {
@@ -410,7 +415,7 @@ class SensorUpdator:
             sensor_base = STEP_STAGE_SENSOR_NAME
             sensorName = self._sensor_name(sensor_base, postfix)
             label = self._sensor_label(sensor_base)
-            if not self.should_update(sensorName, stage, check_attrs):
+            if not self._should_push(sensorName, stage, check_attrs):
                 logging.info(f"跳过更新 {label} 【{sensorName}】，状态一致")
             else:
                 request_body = {
@@ -429,7 +434,7 @@ class SensorUpdator:
     def update_prepay_balance(self, postfix: str, sensorState: float):
         base = PREPAY_BALANCE_SENSOR_NAME
         sensorName = self._sensor_name(base, postfix)
-        if not self.should_update(sensorName, sensorState):
+        if not self._should_push(sensorName, sensorState):
             self._log_skip(base, postfix)
             return
         last_reset = datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
