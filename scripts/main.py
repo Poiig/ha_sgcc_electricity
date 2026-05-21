@@ -40,6 +40,7 @@ def main():
         PASSWORD = os.getenv("PASSWORD")
         HASS_URL = os.getenv("HASS_URL")
         JOB_START_TIME = os.getenv("JOB_START_TIME","07:00" )
+        RUN_ON_STARTUP = os.getenv("RUN_ON_STARTUP", "false").lower() in ("true", "1", "yes")
         LOG_LEVEL = os.getenv("LOG_LEVEL","INFO")
         VERSION = os.getenv("VERSION")
         RETRY_TIMES_LIMIT = int(os.getenv("RETRY_TIMES_LIMIT", 5))
@@ -76,13 +77,17 @@ def main():
     # 每5分钟重发一次数据，防止HA重启后数据丢失
     schedule.every(5).minutes.do(updator.republish)
     
-    # 启动时先尝试从缓存恢复
-    # 如果缓存恢复成功，则跳过本次启动时的实时抓取，避免频繁重启导致账号被封
-    if not updator.republish():
-        logging.info("No valid cache found, fetching data from State Grid...")
+    # 启动时抓取策略：
+    # RUN_ON_STARTUP=true  → 立即登录抓取（Docker 调试/首次部署推荐）
+    # 否则先尝试缓存恢复，无缓存才抓取（有缓存则等到定时任务，避免频繁重启封号）
+    if RUN_ON_STARTUP:
+        logging.info("RUN_ON_STARTUP 已启用，启动后立即执行登录与数据抓取...")
+        run_task(fetcher)
+    elif not updator.republish():
+        logging.info("未找到有效缓存，立即从国家电网抓取数据...")
         run_task(fetcher)
     else:
-        logging.info("Data restored from cache, skipping startup fetch to protect account.")
+        logging.info("已从缓存恢复数据，跳过启动时抓取，等待定时任务执行。")
     
     while True:
         schedule.run_pending()

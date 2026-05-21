@@ -39,6 +39,7 @@ export DB_TYPE="$(json_get db_type none)"
 export HASS_URL="$(json_get hass_url http://homeassistant:8123/)"
 export HASS_TOKEN="$(json_get hass_token "")"
 export JOB_START_TIME="$(json_get job_start_time 07:00)"
+export RUN_ON_STARTUP="$(json_get run_on_startup false)"
 export RETRY_WAIT_TIME_OFFSET_UNIT="$(json_get retry_wait_time_offset_unit 10)"
 export DATA_RETENTION_DAYS="$(json_get data_retention_days 365)"
 export DAILY_FETCH_DAYS="$(json_get daily_fetch_days 7)"
@@ -55,10 +56,11 @@ echo "========================================="
 echo "账号: ${PHONE_NUMBER}"
 echo "HA地址: ${HASS_URL}"
 echo "任务开始时间: ${JOB_START_TIME}"
+echo "启动立即抓取: ${RUN_ON_STARTUP}"
 echo "数据保留天数: ${DATA_RETENTION_DAYS}"
 echo "每日获取天数: ${DAILY_FETCH_DAYS}"
 echo "数据库类型: ${DB_TYPE}"
 echo "========================================="
 
 cd /app
-exec xvfb-run -a --server-args="-screen 0 1920x1080x24" python3 main.py
+exec python3 main.py

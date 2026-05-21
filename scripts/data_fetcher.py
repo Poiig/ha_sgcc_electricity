@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import shutil
 import time
 
 import random
@@ -195,6 +196,18 @@ class DataFetcher:
             element.send_keys(char)
             time.sleep(random.uniform(min_delay, max_delay))
 
+    @staticmethod
+    def _find_chromedriver() -> ChromeService:
+        """Linux 桌面环境查找 chromedriver，找不到则交给 Selenium Manager。"""
+        path = shutil.which("chromedriver") or shutil.which("chromedriver.exe")
+        if path:
+            return ChromeService(executable_path=path)
+        try:
+            return ChromeService()
+        except Exception:
+            pass
+        raise RuntimeError("ChromeDriver 未找到，请安装 chromedriver 或 chromium-driver")
+
     def _get_webdriver(self):
         logging.info(f"正在初始化 WebDriver, 平台: {platform.system()}")
         if platform.system() == 'Windows':
@@ -227,19 +240,20 @@ class DataFetcher:
             except Exception as e:
                 logging.warning(f"CDP 注入失败 (非致命): {e}")
         else:
-            # --- Docker / Linux 环境：全量反检测伪装 ---
+            # --- Docker / Linux 环境（对齐 upstream headless 方案）---
             browser_window_size = os.getenv("BROWSER_WINDOW_SIZE", "1158,848")
             browser_language = os.getenv("BROWSER_LANGUAGE", "zh-HK,zh,en-US,en,zh-CN")
             browser_ua = os.getenv(
                 "BROWSER_USER_AGENT",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
             )
             browser_device_scale_factor = float(os.getenv("BROWSER_DEVICE_SCALE_FACTOR", "2"))
             browser_language_primary = browser_language.split(",")[0]
 
             chrome_options = webdriver.ChromeOptions()
             chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-gpu")
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--start-maximized")
             chrome_options.add_argument(f"--window-size={browser_window_size}")
@@ -250,15 +264,9 @@ class DataFetcher:
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
             chrome_options.add_experimental_option("useAutomationExtension", False)
 
-            # 伪装 User-Agent 为 macOS Chrome
             chrome_options.add_argument(f"user-agent={browser_ua}")
-
-            # 高级伪装参数
-            chrome_options.add_argument("--disable-features=Translate")
             chrome_options.add_argument(f"--force-device-scale-factor={browser_device_scale_factor}")
             chrome_options.add_argument("--high-dpi-support=1")
-            chrome_options.add_argument("--password-store=basic")
-            chrome_options.add_argument("--use-mock-keychain")
 
             chrome_options.add_experimental_option(
                 "prefs",
@@ -269,12 +277,15 @@ class DataFetcher:
                 },
             )
 
-            if 'PYTHON_IN_DOCKER' in os.environ:
+            in_docker = "PYTHON_IN_DOCKER" in os.environ
+            if in_docker:
+                # Docker 无显示服务器，必须用 headless=new（Xvfb 有头模式会崩溃）
+                chrome_options.add_argument("--headless=new")
                 chrome_options.binary_location = "/usr/bin/chromium"
                 service = ChromeService(executable_path="/usr/bin/chromedriver")
-                logging.info("使用 Chromium 浏览器 (Docker + Xvfb 模式)")
+                logging.info("使用 Chromium 浏览器 (Docker headless 模式)")
             else:
-                service = ChromeService()
+                service = self._find_chromedriver()
                 logging.info("使用 Chrome 浏览器 (Linux 桌面模式)")
 
             driver = webdriver.Chrome(
