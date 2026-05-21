@@ -20,6 +20,8 @@ import requests
 from PIL import Image
 from openai import OpenAI
 
+import const
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,16 +32,16 @@ class ClickCaptchaSolver:
                  api_key: Optional[str] = None,
                  model: Optional[str] = None,
                  base_url: Optional[str] = None):
-        self.api_key = (api_key or os.getenv('ARK_API_KEY', '').strip())
-        self.model = model or "doubao-seed-2-0-pro-260215"
-        self.base_url = base_url or "https://ark.cn-beijing.volces.com/api/v3"
+        self.api_key = api_key or const.LLM_API_KEY
+        self.model = model or const.LLM_MODEL
+        self.base_url = base_url or const.LLM_BASE_URL
         self._client: Optional[OpenAI] = None
 
     @property
     def client(self) -> OpenAI:
         if self._client is None:
             if not self.api_key:
-                raise RuntimeError("ARK_API_KEY 未设置，验证码解算将失败")
+                raise RuntimeError("LLM_API_KEY 未设置，验证码解算将失败")
             self._client = OpenAI(base_url=self.base_url, api_key=self.api_key)
         return self._client
 
