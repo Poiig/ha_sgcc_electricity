@@ -654,7 +654,12 @@ class DataFetcher:
                 balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data, enhanced_balance = self._get_all_data(driver, user_id, userid_index)
                 logging.info(f"用户 [{user_id}] 数据获取完成: 余额={balance}CNY, 最近日用电={last_daily_usage}kWh({last_daily_date}), "
                              f"年度用电={yearly_usage}kWh, 年度电费={yearly_charge}CNY, 月用电={month_usage}kWh, 月电费={month_charge}CNY")
-                updator.update_one_userid(user_id, balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data=tou_data, enhanced_balance=enhanced_balance)
+                updator.update_one_userid(
+                    user_id, balance, last_daily_date, last_daily_usage,
+                    yearly_charge, yearly_usage, month_charge, month_usage,
+                    tou_data=tou_data, enhanced_balance=enhanced_balance,
+                    user_name=self._user_name_map.get(user_id, ""),
+                )
                 fetch_results.append({
                     "user_id": user_id,
                     "user_name": self._user_name_map.get(user_id, user_id),

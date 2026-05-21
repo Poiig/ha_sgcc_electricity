@@ -17,7 +17,7 @@ class SensorUpdator:
         self._init_balance_notify()
         
     def _init_balance_notify(self):
-        push_type = os.getenv("PUSH_TYPE", "None").lower()
+        push_type = os.getenv("PUSH_TYPE", "None").strip().lower()
         if push_type == "pushplus":
             from notify import PushplusNotify
             self.balance_notify = PushplusNotify()
@@ -31,13 +31,13 @@ class SensorUpdator:
             self.balance_notify = None
         
 
-    def update_one_userid(self, user_id: str, balance: float, last_daily_date: str, last_daily_usage: float, yearly_charge: float, yearly_usage: float, month_charge: float, month_usage: float, tou_data: dict = None, enhanced_balance: dict = None, notify=True):
+    def update_one_userid(self, user_id: str, balance: float, last_daily_date: str, last_daily_usage: float, yearly_charge: float, yearly_usage: float, month_charge: float, month_usage: float, tou_data: dict = None, enhanced_balance: dict = None, user_name: str = "", notify=True):
         logging.info(f"[{user_id}] 开始更新 Home Assistant 传感器数据...")
-        self._save_to_cache(user_id, balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data, enhanced_balance)
+        self._save_to_cache(user_id, balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data, enhanced_balance, user_name=user_name)
         postfix = f"_{user_id[-4:]}"
         if balance is not None:
             if notify and self.balance_notify is not None:
-                self.balance_notify(user_id, balance)
+                self.balance_notify(user_id, balance, user_name)
             self.update_balance(postfix, balance, enhanced_balance)
         if last_daily_usage is not None:
             self.update_last_daily_usage(postfix, last_daily_date, last_daily_usage)
@@ -64,7 +64,7 @@ class SensorUpdator:
         from const import get_data_dir
         return os.path.join(get_data_dir(), 'sgcc_cache.json')
 
-    def _save_to_cache(self, user_id, balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data=None, enhanced_balance=None):
+    def _save_to_cache(self, user_id, balance, last_daily_date, last_daily_usage, yearly_charge, yearly_usage, month_charge, month_usage, tou_data=None, enhanced_balance=None, user_name=""):
         cache_file = self._get_cache_file()
         abs_cache_file = os.path.abspath(cache_file)
         data = {}
@@ -83,6 +83,7 @@ class SensorUpdator:
             "yearly_usage": yearly_usage,
             "month_charge": month_charge,
             "month_usage": month_usage,
+            "user_name": user_name or "",
             "timestamp": datetime.now().isoformat()
         }
 

@@ -18,6 +18,13 @@ def _should_notify(balance: float) -> bool:
     return balance < threshold
 
 
+def _format_user_label(user_id, user_name: str = "") -> str:
+    name = (user_name or "").strip()
+    if name and name != str(user_id):
+        return f"{name}（{user_id}）"
+    return str(user_id)
+
+
 def _post_wework(webhook: str, payload: dict) -> bool:
     try:
         resp = requests.post(webhook, json=payload, timeout=10)
@@ -36,50 +43,58 @@ def _post_wework(webhook: str, payload: dict) -> bool:
 
 class PushplusNotify(typ.NamedTuple):
 
-    def __call__(self, user_id, balance):
+    def __call__(self, user_id, balance, user_name: str = ""):
         if not _should_notify(balance):
             return False
+        label = _format_user_label(user_id, user_name)
         tokens = os.getenv("PUSHPLUS_TOKEN", "").split(",")
         for token in tokens:
             token = token.strip()
             if not token:
                 continue
             title = "电费余额不足提醒"
-            content = f"您用户号{user_id}的当前电费余额为：{balance}元，请及时充值。"
+            content = f"用户 {label} 的当前电费余额为：{balance}元，请及时充值。"
             url = f"http://www.pushplus.plus/send?token={token}&title={title}&content={content}"
             resp = requests.get(url, timeout=10)
-            logging.info("已发送 PushPlus 余额提醒: 户号=%s 余额=%s", user_id, balance)
+            logging.info("已发送 PushPlus 余额提醒: %s 余额=%s", label, balance)
             return resp.status_code == 200
         return False
 
 
 class UrlPushNotify(typ.NamedTuple):
 
-    def __call__(self, user_id, balance):
+    def __call__(self, user_id, balance, user_name: str = ""):
         if not _should_notify(balance):
             return False
+        label = _format_user_label(user_id, user_name)
         url = os.getenv("PUSH_URL", "").strip()
         if not url:
             logging.warning("PUSH_URL 未配置")
             return False
-        resp = requests.post(url, json={"user_id": user_id, "balance": balance}, timeout=10)
-        logging.info("已发送 URL 余额提醒: 户号=%s 余额=%s", user_id, balance)
+        resp = requests.post(
+            url,
+            json={"user_id": user_id, "user_name": user_name, "balance": balance},
+            timeout=10,
+        )
+        logging.info("已发送 URL 余额提醒: %s 余额=%s", label, balance)
         return resp.status_code == 200
 
 
 class WeworkNotify(typ.NamedTuple):
     """企业微信群机器人 webhook 余额提醒。"""
 
-    def __call__(self, user_id, balance):
+    def __call__(self, user_id, balance, user_name: str = ""):
         if not _should_notify(balance):
             return False
         webhook = os.getenv("WEWORK_WEBHOOK_URL", "").strip()
         if not webhook:
             logging.warning("WEWORK_WEBHOOK_URL 未配置")
             return False
+        label = _format_user_label(user_id, user_name)
         threshold = _balance_threshold()
         content = (
             "**电费余额不足提醒**\n"
+            f"> 户名：<font color=\"comment\">{(user_name or user_id)}</font>\n"
             f"> 户号：<font color=\"comment\">{user_id}</font>\n"
             f"> 当前余额：<font color=\"warning\">{balance} 元</font>\n"
             f"> 提醒阈值：{threshold} 元\n"
@@ -88,7 +103,7 @@ class WeworkNotify(typ.NamedTuple):
         payload = {"msgtype": "markdown", "markdown": {"content": content}}
         ok = _post_wework(webhook, payload)
         if ok:
-            logging.info("已发送企业微信余额提醒: 户号=%s 余额=%s", user_id, balance)
+            logging.info("已发送企业微信余额提醒: %s 余额=%s", label, balance)
         return ok
 
 
@@ -192,7 +207,7 @@ class WeworkQrCodeNotify(typ.NamedTuple):
 
 def get_qrcode_notifier():
     """按配置选择二维码推送方式。PUSH_TYPE=wework 时优先走企微 webhook。"""
-    push_type = os.getenv("PUSH_TYPE", "none").lower()
+    push_type = os.getenv("PUSH_TYPE", "none").strip().lower()
     wework = os.getenv("WEWORK_WEBHOOK_URL", "").strip()
     if push_type == "wework" and wework:
         return WeworkQrCodeNotify()
