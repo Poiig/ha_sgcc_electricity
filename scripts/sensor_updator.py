@@ -171,7 +171,7 @@ class SensorUpdator:
         sensorName = DAILY_USAGE_SENSOR_NAME + postfix
         
         if not self.should_update(sensorName, sensorState, {"last_reset": last_daily_date}):
-             logging.info(f"Skipping update for {sensorName}, state matches.")
+             logging.info(f"跳过更新 {sensorName}, 状态一致")
              return
 
         request_body = {
@@ -187,13 +187,13 @@ class SensorUpdator:
         }
 
         self.send_url(sensorName, request_body)
-        logging.info(f"Homeassistant sensor {sensorName} state updated: {sensorState} kWh")
+        logging.info(f"传感器 {sensorName} 已更新: {sensorState} kWh")
 
     def update_balance(self, postfix: str, sensorState: float, enhanced_balance: dict = None):
         sensorName = BALANCE_SENSOR_NAME + postfix
 
         if not self.should_update(sensorName, sensorState):
-             logging.info(f"Skipping update for {sensorName}, state matches.")
+             logging.info(f"跳过更新 {sensorName}, 状态一致")
              return
 
         last_reset = datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
@@ -215,7 +215,7 @@ class SensorUpdator:
         }
 
         self.send_url(sensorName, request_body)
-        logging.info(f"Homeassistant sensor {sensorName} state updated: {sensorState} CNY")
+        logging.info(f"传感器 {sensorName} 已更新: {sensorState} CNY")
 
     def update_month_data(self, postfix: str, sensorState: float, usage=False):
         sensorName = (
@@ -229,7 +229,7 @@ class SensorUpdator:
         last_reset = last_day_of_previous_month.strftime("%Y-%m")
         
         if not self.should_update(sensorName, sensorState, {"last_reset": last_reset}):
-             logging.info(f"Skipping update for {sensorName}, state matches.")
+             logging.info(f"跳过更新 {sensorName}, 状态一致")
              return
 
         request_body = {
@@ -245,7 +245,7 @@ class SensorUpdator:
         }
 
         self.send_url(sensorName, request_body)
-        logging.info(f"Homeassistant sensor {sensorName} state updated: {sensorState} {'kWh' if usage else 'CNY'}")
+        logging.info(f"传感器 {sensorName} 已更新: {sensorState} {'kWh' if usage else 'CNY'}")
 
     def update_yearly_data(self, postfix: str, sensorState: float, usage=False):
         sensorName = (
@@ -260,7 +260,7 @@ class SensorUpdator:
             last_reset = datetime.now().strftime("%Y")
             
         if not self.should_update(sensorName, sensorState, {"last_reset": last_reset}):
-             logging.info(f"Skipping update for {sensorName}, state matches.")
+             logging.info(f"跳过更新 {sensorName}, 状态一致")
              return
              
         request_body = {
@@ -275,7 +275,7 @@ class SensorUpdator:
             },
         }
         self.send_url(sensorName, request_body)
-        logging.info(f"Homeassistant sensor {sensorName} state updated: {sensorState} {'kWh' if usage else 'CNY'}")
+        logging.info(f"传感器 {sensorName} 已更新: {sensorState} {'kWh' if usage else 'CNY'}")
 
     def _update_tou_sensors(self, postfix: str, tou_data: dict):
         """更新月度分时电量传感器（谷/平/峰/尖）"""
@@ -315,7 +315,7 @@ class SensorUpdator:
                 continue
             sensorName = sensor_base + postfix
             if not self.should_update(sensorName, value, {"last_reset": last_reset}):
-                logging.info(f"Skipping update for {sensorName}, state matches.")
+                logging.info(f"跳过更新 {sensorName}, 状态一致")
                 continue
             request_body = {
                 "state": value,
@@ -330,7 +330,7 @@ class SensorUpdator:
                 },
             }
             self.send_url(sensorName, request_body)
-            logging.info(f"Homeassistant sensor {sensorName} state updated: {value} kWh ({label})")
+            logging.info(f"传感器 {sensorName} 已更新: {value} kWh ({label})")
 
     def update_prepay_balance(self, postfix: str, sensorState: float):
         """更新预付费余额传感器"""
@@ -352,7 +352,7 @@ class SensorUpdator:
             },
         }
         self.send_url(sensorName, request_body)
-        logging.info(f"Homeassistant sensor {sensorName} state updated: {sensorState} CNY")
+        logging.info(f"传感器 {sensorName} 已更新: {sensorState} CNY")
 
     def send_url(self, sensorName, request_body):
         headers = {

@@ -92,5 +92,28 @@
 
 ---
 
-通过 `DATA_RETENTION_DAYS` 环境变量控制数据保留天数（默认 365 天），自动清理过期数据。
-`IGNORE_USER_ID` 中配置的用户数据会在每次运行时自动清理。
+## `step_usage` — 阶梯用电量
+
+> 仅住宅用户有阶梯用电数据，充电桩用户无阶梯信息。
+
+主键：`(user_id, year_month)`
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| user_id | TEXT | 用户户号 |
+| user_name | TEXT | 用户名 |
+| year_month | TEXT | 年月（YYYY-MM） |
+| used_step1 | REAL | 已用一阶电量（kWh） |
+| remain_step1 | REAL | 剩余一阶电量（kWh） |
+| used_step2 | REAL | 已用二阶电量（kWh） |
+| remain_step2 | REAL | 剩余二阶电量（kWh） |
+| used_step3 | REAL | 已用三阶电量（kWh） |
+| total_usage | REAL | 累计用电量（kWh） |
+| step_stage | INTEGER | 当前阶梯阶段（1/2/3） |
+| created_at | DATETIME | 创建时间 |
+| updated_at | DATETIME | 更新时间 |
+
+---
+
+通过 `DATA_RETENTION_DAYS` 环境变量控制数据保留天数（默认 365 天），自动清理过期的日用电和余额记录。
+`IGNORE_USER_ID` 中配置的户号仅跳过本次抓取，不会删除数据库中的历史数据。

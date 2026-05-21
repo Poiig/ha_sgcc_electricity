@@ -6,6 +6,8 @@ extracting structured data from the Vue component instances.
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from typing import Any, Optional
 
 
@@ -94,34 +96,20 @@ def normalize_balance(components: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def normalize_usage(components: list[dict[str, Any]]) -> dict[str, Any]:
+def normalize_usage(components: list[dict[str, Any]], fetch_days: int = 7) -> dict[str, Any]:
     """Extract usage data (yearly summary, monthly, daily with TOU) from Vue state."""
     power_data = _first_data_value(components, "powerData") or _first_data_value(components, "tableData_t") or {}
     info = power_data.get("dataInfo") or {}
     month_rows = power_data.get("mothEleList") or _first_data_value(components, "mothData") or []
 
-    daily_rows = []
-    for key in ("tableData", "new_sevenEleList", "sevenEleList", "thirtyEleList"):
-        for row in _data_values(components, key):
-            if isinstance(row, list) and row and any(
-                item.get("thisVPq") is not None for item in row if isinstance(item, dict)
-            ):
-                daily_rows = row
-                break
-        if daily_rows:
-            break
+    if fetch_days == 30:
+        daily_keys = ("thirtyEleList", "thirtyEleList_t", "tableData", "new_sevenEleList", "sevenEleList")
+    else:
+        daily_keys = ("tableData", "new_sevenEleList", "sevenEleList", "thirtyEleList", "thirtyEleList_t")
 
-    # 如果没有分时数据，尝试只有总用电量的日数据
+    daily_rows = _pick_daily_rows(components, daily_keys, require_tou=True)
     if not daily_rows:
-        for key in ("tableData", "new_sevenEleList", "sevenEleList", "thirtyEleList"):
-            for row in _data_values(components, key):
-                if isinstance(row, list) and row and any(
-                    item.get("dayElePq") is not None for item in row if isinstance(item, dict)
-                ):
-                    daily_rows = row
-                    break
-            if daily_rows:
-                break
+        daily_rows = _pick_daily_rows(components, daily_keys, require_tou=False)
 
     return {
         "year": str(info.get("year") or _first_data_value(components, "queryYear") or ""),
@@ -133,7 +121,12 @@ def normalize_usage(components: list[dict[str, Any]]) -> dict[str, Any]:
             "end": _first_data_value(components, "end"),
         },
         "months": [_normalize_usage_month(row) for row in month_rows if isinstance(row, dict)],
-        "daily": [_normalize_daily_row(row) for row in daily_rows if isinstance(row, dict) and _normalize_daily_row(row)],
+        "daily": [
+            row for row in (
+                _normalize_daily_row(r, str(info.get("year") or _first_data_value(components, "queryYear") or ""))
+                for r in daily_rows if isinstance(r, dict)
+            ) if row
+        ],
         "raw": power_data,
     }
 
@@ -197,6 +190,25 @@ def _data_values(components: list[dict[str, Any]], key: str) -> list[Any]:
     return [(component.get("data") or {}).get(key) for component in components if key in (component.get("data") or {})]
 
 
+def _pick_daily_rows(components: list[dict[str, Any]], keys: tuple[str, ...], require_tou: bool) -> list[Any]:
+    """从 Vue state 中选择最合适的日用电列表（优先条数更多的）。"""
+    best: list[Any] = []
+    tou_field = "thisVPq"
+    total_field = "dayElePq"
+    for key in keys:
+        for row in _data_values(components, key):
+            if not isinstance(row, list) or not row:
+                continue
+            if require_tou:
+                if not any(item.get(tou_field) is not None for item in row if isinstance(item, dict)):
+                    continue
+            elif not any(item.get(total_field) is not None for item in row if isinstance(item, dict)):
+                continue
+            if len(row) > len(best):
+                best = row
+    return best
+
+
 def _normalize_usage_month(row: dict[str, Any]) -> dict[str, Any]:
     total = _safe_float(row.get("monthEleNum"))
     charge = _safe_float(row.get("monthEleCost"))
@@ -211,8 +223,8 @@ def _normalize_usage_month(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _normalize_daily_row(row: dict[str, Any]) -> Optional[dict[str, Any]]:
-    date = str(row.get("day") or "").strip()
+def _normalize_daily_row(row: dict[str, Any], year: str = "") -> Optional[dict[str, Any]]:
+    date = _normalize_date(row.get("day"), year)
     if not date:
         return None
     total = _safe_float(row.get("dayElePq"), default=0.0)
@@ -224,6 +236,23 @@ def _normalize_daily_row(row: dict[str, Any]) -> Optional[dict[str, Any]]:
         "peak_usage": _safe_float(row.get("thisPPq"), default=0.0),
         "tip_usage": _safe_float(row.get("thisTPq"), default=0.0),
     }
+
+
+def _normalize_date(value: Any, year: str = "") -> str:
+    """将日期统一为 YYYY-MM-DD 格式"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", text):
+        return text
+    m = re.match(r"^(\d{1,2})/(\d{1,2})$", text)
+    if m:
+        y = year or str(datetime.now().year)
+        return f"{y}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+    m = re.match(r"^(\d{4})[/\-](\d{1,2})[/\-](\d{1,2})$", text)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    return text
 
 
 def _normalize_ym(value: Any) -> str:

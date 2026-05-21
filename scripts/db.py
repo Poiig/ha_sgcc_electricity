@@ -55,6 +55,9 @@ class DB:
     def delete_user_data(self, user_id: str) -> None:
         raise NotImplementedError
 
+    def insert_step_data(self, data: dict) -> bool:
+        raise NotImplementedError
+
     def close_connect(self) -> None:
         raise NotImplementedError
 
@@ -69,6 +72,7 @@ class SqliteDB(DB):
     MONTHLY_TABLE = "monthly_usage"
     YEARLY_TABLE = "yearly_usage"
     BALANCE_TABLE = "balance_log"
+    STEP_TABLE = "step_usage"
 
     def __init__(self) -> None:
         self.connect: Optional[sqlite3.Connection] = None
@@ -162,6 +166,22 @@ class SqliteDB(DB):
                 amount_due REAL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (user_id, as_of)
+            );
+
+            CREATE TABLE IF NOT EXISTS {self.STEP_TABLE} (
+                user_id TEXT NOT NULL,
+                user_name TEXT NOT NULL DEFAULT '',
+                year_month TEXT NOT NULL,
+                used_step1 REAL NOT NULL DEFAULT 0,
+                remain_step1 REAL NOT NULL DEFAULT 0,
+                used_step2 REAL NOT NULL DEFAULT 0,
+                remain_step2 REAL NOT NULL DEFAULT 0,
+                used_step3 REAL NOT NULL DEFAULT 0,
+                total_usage REAL NOT NULL DEFAULT 0,
+                step_stage INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, year_month)
             );
 
             CREATE INDEX IF NOT EXISTS idx_daily_user_date ON {self.DAILY_TABLE}(user_id, date);
@@ -305,11 +325,35 @@ class SqliteDB(DB):
         self._execute(f"DELETE FROM {self.BALANCE_TABLE} WHERE user_id=? AND as_of<?", (self.user_id, cutoff))
         logging.info("Cleaned up data older than %s for user %s", cutoff, self.user_id)
 
+    def insert_step_data(self, data: dict) -> bool:
+        year_month = str(data["year_month"]).strip()
+        return self._execute(
+            f"""INSERT INTO {self.STEP_TABLE} (user_id, user_name, year_month, used_step1, remain_step1, used_step2, remain_step2, used_step3, total_usage, step_stage)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, year_month) DO UPDATE SET
+                    user_name = CASE WHEN excluded.user_name != '' THEN excluded.user_name ELSE {self.STEP_TABLE}.user_name END,
+                    used_step1 = excluded.used_step1,
+                    remain_step1 = excluded.remain_step1,
+                    used_step2 = excluded.used_step2,
+                    remain_step2 = excluded.remain_step2,
+                    used_step3 = excluded.used_step3,
+                    total_usage = excluded.total_usage,
+                    step_stage = excluded.step_stage,
+                    updated_at = CURRENT_TIMESTAMP""",
+            (self.user_id, data.get("user_name", ""),
+             year_month,
+             _sf(data.get("used_step1"), 0.0), _sf(data.get("remain_step1"), 0.0),
+             _sf(data.get("used_step2"), 0.0), _sf(data.get("remain_step2"), 0.0),
+             _sf(data.get("used_step3"), 0.0), _sf(data.get("total_usage"), 0.0),
+             int(data.get("step_stage", 1))),
+        )
+
     def delete_user_data(self, user_id: str) -> None:
+        """手动清理指定户号数据（正常运行时不自动调用）"""
         for tbl in [self.DAILY_TABLE, self.MONTHLY_TABLE, self.YEARLY_TABLE,
-                     self.BALANCE_TABLE, self.USERS_TABLE]:
+                     self.BALANCE_TABLE, self.STEP_TABLE, self.USERS_TABLE]:
             self._execute(f"DELETE FROM {tbl} WHERE user_id=?", (str(user_id).strip(),))
-        logging.info("Deleted all data for ignored user %s", user_id)
+        logging.info("Deleted all data for user %s", user_id)
 
     def _execute(self, sql: str, params: tuple = ()) -> bool:
         if self.connect is None:
@@ -340,6 +384,7 @@ class MysqlDB(DB):
     MONTHLY_TABLE = "monthly_usage"
     YEARLY_TABLE = "yearly_usage"
     BALANCE_TABLE = "balance_log"
+    STEP_TABLE = "step_usage"
 
     def __init__(self) -> None:
         self.connect = None
@@ -432,31 +477,21 @@ class MysqlDB(DB):
                 PRIMARY KEY (`user_id`, `as_of`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
 
-            # 为已存在的表添加 user_name 列（兼容升级）
-            for tbl in [self.USERS_TABLE, self.DAILY_TABLE, self.MONTHLY_TABLE,
-                        self.YEARLY_TABLE, self.BALANCE_TABLE]:
-                try:
-                    cursor.execute(
-                        f"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
-                        f"WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='{tbl}' AND COLUMN_NAME='user_name'"
-                    )
-                    if cursor.fetchone()[0] == 0:
-                        cursor.execute(f"ALTER TABLE `{tbl}` ADD COLUMN `user_name` VARCHAR(100) NOT NULL DEFAULT '' AFTER `user_id`")
-                        logging.info(f"MySQL: 已为表 {tbl} 添加 user_name 列")
-                except Exception as exc:
-                    logging.debug(f"ALTER TABLE {tbl} add user_name: {exc}")
-
-            # 为 balance_log 表添加 amount_due 列（替代旧的多个金额字段）
-            try:
-                cursor.execute(
-                    f"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
-                    f"WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='{self.BALANCE_TABLE}' AND COLUMN_NAME='amount_due'"
-                )
-                if cursor.fetchone()[0] == 0:
-                    cursor.execute(f"ALTER TABLE `{self.BALANCE_TABLE}` ADD COLUMN `amount_due` DOUBLE AFTER `balance`")
-                    logging.info(f"MySQL: 已为表 {self.BALANCE_TABLE} 添加 amount_due 列")
-            except Exception as exc:
-                logging.debug(f"ALTER TABLE balance_log add amount_due: {exc}")
+            cursor.execute(f"""CREATE TABLE IF NOT EXISTS `{self.STEP_TABLE}` (
+                `user_id` VARCHAR(50) NOT NULL,
+                `user_name` VARCHAR(100) NOT NULL DEFAULT '',
+                `year_month` VARCHAR(7) NOT NULL,
+                `used_step1` DOUBLE NOT NULL DEFAULT 0,
+                `remain_step1` DOUBLE NOT NULL DEFAULT 0,
+                `used_step2` DOUBLE NOT NULL DEFAULT 0,
+                `remain_step2` DOUBLE NOT NULL DEFAULT 0,
+                `used_step3` DOUBLE NOT NULL DEFAULT 0,
+                `total_usage` DOUBLE NOT NULL DEFAULT 0,
+                `step_stage` INT NOT NULL DEFAULT 1,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (`user_id`, `year_month`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
 
             self.connect.commit()
         except Exception as exc:
@@ -573,11 +608,34 @@ class MysqlDB(DB):
         self._execute(f"DELETE FROM `{self.BALANCE_TABLE}` WHERE user_id=%s AND as_of<%s", (self.user_id, cutoff))
         logging.info("Cleaned up data older than %s for user %s", cutoff, self.user_id)
 
+    def insert_step_data(self, data: dict) -> bool:
+        year_month = str(data["year_month"]).strip()
+        return self._execute(
+            f"""INSERT INTO `{self.STEP_TABLE}` (`user_id`, `user_name`, `year_month`, `used_step1`, `remain_step1`, `used_step2`, `remain_step2`, `used_step3`, `total_usage`, `step_stage`)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    `user_name`=CASE WHEN VALUES(`user_name`)!='' THEN VALUES(`user_name`) ELSE `user_name` END,
+                    `used_step1`=VALUES(`used_step1`),
+                    `remain_step1`=VALUES(`remain_step1`),
+                    `used_step2`=VALUES(`used_step2`),
+                    `remain_step2`=VALUES(`remain_step2`),
+                    `used_step3`=VALUES(`used_step3`),
+                    `total_usage`=VALUES(`total_usage`),
+                    `step_stage`=VALUES(`step_stage`)""",
+            (self.user_id, data.get("user_name", ""),
+             year_month,
+             _sf(data.get("used_step1"), 0.0), _sf(data.get("remain_step1"), 0.0),
+             _sf(data.get("used_step2"), 0.0), _sf(data.get("remain_step2"), 0.0),
+             _sf(data.get("used_step3"), 0.0), _sf(data.get("total_usage"), 0.0),
+             int(data.get("step_stage", 1))),
+        )
+
     def delete_user_data(self, user_id: str) -> None:
+        """手动清理指定户号数据（正常运行时不自动调用）"""
         for tbl in [self.DAILY_TABLE, self.MONTHLY_TABLE, self.YEARLY_TABLE,
-                     self.BALANCE_TABLE, self.USERS_TABLE]:
+                     self.BALANCE_TABLE, self.STEP_TABLE, self.USERS_TABLE]:
             self._execute(f"DELETE FROM `{tbl}` WHERE user_id=%s", (str(user_id).strip(),))
-        logging.info("Deleted all data for ignored user %s", user_id)
+        logging.info("Deleted all data for user %s", user_id)
 
     def _execute(self, sql: str, params: tuple = ()) -> bool:
         if self.connect is None or not self.connect.is_connected():
