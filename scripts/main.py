@@ -44,6 +44,7 @@ def main():
         HASS_URL = os.getenv("HASS_URL")
         JOB_START_TIME = os.getenv("JOB_START_TIME","07:00" )
         RUN_ON_STARTUP = os.getenv("RUN_ON_STARTUP", "false").lower() in ("true", "1", "yes")
+        logging.info(f"RUN_ON_STARTUP={os.getenv('RUN_ON_STARTUP', 'false')} (生效: {RUN_ON_STARTUP})")
         LOG_LEVEL = os.getenv("LOG_LEVEL","INFO")
         VERSION = os.getenv("VERSION")
         RETRY_TIMES_LIMIT = int(os.getenv("RETRY_TIMES_LIMIT", 5))
@@ -73,7 +74,7 @@ def main():
     # 添加随机延迟
     next_run_time = parsed_time + timedelta(hours=12)
 
-    logging.info(f'Run job now! The next run will be at {parsed_time.strftime("%H:%M")} and {next_run_time.strftime("%H:%M")} every day')
+    logging.info(f'定时任务已注册，每天 {parsed_time.strftime("%H:%M")} 和 {next_run_time.strftime("%H:%M")} 各执行一次')
     schedule.every().day.at(parsed_time.strftime("%H:%M")).do(run_task, fetcher)
     schedule.every().day.at(next_run_time.strftime("%H:%M")).do(run_task, fetcher)
     
